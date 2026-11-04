@@ -48,3 +48,58 @@ class TestPagination(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyPages(unittest.TestCase):
+    def _run(self, pages_meta):
+        """pages_meta: {page_no: (rows, total_pages)}."""
+        import urllib.parse
+        import apiverdict.pagination as mod
+        orig = mod.request_json
+        def fake(method, url, payload=None, headers=None, timeout=10.0, **kw):
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+            page_no = int(q.get("page", "1"))
+            rows, total_pages = pages_meta[page_no]
+            return 200, {"items": rows, "page": page_no,
+                         "total_pages": total_pages}, {}
+        mod.request_json = fake
+        try:
+            return mod.run_pagination_check(
+                "http://127.0.0.1:9/api/items", page_size=10, style="page")
+        finally:
+            mod.request_json = orig
+
+    def test_many_empty_pages_fail(self):
+        p1 = [{"id": i} for i in range(1, 11)]
+        p2 = [{"id": i} for i in range(11, 21)]
+        v = self._run({1: (p1, 4), 2: (p2, 4), 3: ([], 4), 4: ([], 4)})
+        self.assertEqual(v.status, "FAIL", v.summary)
+        self.assertIn("empty page", v.summary)
+
+    def test_one_empty_page_tolerated(self):
+        p1 = [{"id": i} for i in range(1, 11)]
+        p2 = [{"id": i} for i in range(11, 21)]
+        v = self._run({1: (p1, 3), 2: (p2, 3), 3: ([], 3)})
+        self.assertEqual(v.status, "PASS", v.summary)
+
+
+class TestTotalPagesDrift(unittest.TestCase):
+    def test_total_pages_drift_is_inconclusive(self):
+        import urllib.parse
+        import apiverdict.pagination as mod
+        orig = mod.request_json
+        def fake(method, url, payload=None, headers=None, timeout=10.0, **kw):
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+            page_no = int(q.get("page", "1"))
+            rows = [{"id": i} for i in range(1, 11)]
+            tp = 5 if page_no == 1 else 4
+            return 200, {"items": rows, "page": page_no,
+                         "total_pages": tp}, {}
+        mod.request_json = fake
+        try:
+            v = mod.run_pagination_check(
+                "http://127.0.0.1:9/api/items", page_size=10, style="page")
+        finally:
+            mod.request_json = orig
+        self.assertEqual(v.status, "INCONCLUSIVE", v.summary)
+        self.assertIn("total_pages changed", v.summary)

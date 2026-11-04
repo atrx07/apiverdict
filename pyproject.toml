@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apiverdict"
+version = "0.4.0"
+description = "API behaviour toolkit: 27 invariant checks (burst, pagination, error-shape, auth-matrix, rate-limit, idempotency, webhook, cache, spec-diff, and more) with unified CI verdicts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Arppith Andrews" }]
+keywords = ["api", "testing", "ci", "idempotency", "pagination"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.scripts]
+apiverdict = "apiverdict.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/atrx07/apiverdict"
+
+[tool.setuptools]
+packages = ["apiverdict"]

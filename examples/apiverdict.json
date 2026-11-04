@@ -1,0 +1,13 @@
+{
+  "default_environment": "local",
+  "environments": {
+    "local": {
+      "base_url": "http://127.0.0.1:8765",
+      "auth": {"type": "bearer", "env_var": "APIVERDICT_TOKEN"}
+    },
+    "staging": {
+      "base_url": "https://staging.example.invalid",
+      "auth": {"type": "api-key", "env_var": "APIVERDICT_API_KEY", "header": "X-Api-Key"}
+    }
+  }
+}

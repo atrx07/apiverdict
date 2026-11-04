@@ -57,23 +57,28 @@ def _run_verify_cmd(cmd: str) -> int:
     return int(match.group(0))
 
 
-def _fetch_verify_url(url: str) -> int:
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        body = resp.read().decode("utf-8", "replace").strip()
-    try:
-        data = json.loads(body)
-    except ValueError:
-        data = body
+def _fetch_verify_url(url: str, headers: dict[str, str] | None = None) -> int:
+    # Routed through request_json so the timeout and response-size
+    # guards apply to verify reads too (a verify URL returning a dump
+    # used to be read unbounded here).
+    _status, data, _hdrs = request_json("GET", url, headers=headers)
     if isinstance(data, dict) and "count" in data:
         return int(data["count"])
     return int(data)
 
 
-def _read_state(verify_cmd: str | None, verify_url: str | None, round_no: int) -> int:
+def _read_state(verify_cmd: str | None, verify_url: str | None, round_no: int,
+                verify_headers: dict[str, str] | None = None) -> int:
+    if verify_cmd and verify_url:
+        # Both given used to silently prefer the command, masking a
+        # misconfigured URL. Fail fast instead: every caller turns
+        # this ValueError into INCONCLUSIVE, never a verdict.
+        raise ValueError("both verify command and verify URL supplied; "
+                         "supply exactly one")
     if verify_cmd:
         return _run_verify_cmd(_render(verify_cmd, round_no))
     if verify_url:
-        return _fetch_verify_url(_render(verify_url, round_no))
+        return _fetch_verify_url(_render(verify_url, round_no), verify_headers)
     raise ValueError("no verify command or verify URL supplied")
 
 
@@ -82,6 +87,7 @@ class _OneRequest:
     status: int | None
     send_skew_ms: float
     error: str | None = None
+    body: object = None
 
 
 def _fire_burst(
@@ -104,8 +110,8 @@ def _fire_burst(
             return
         start_times[index] = time.perf_counter()
         try:
-            status, _body, _hdrs = request_json(method, url, payload, headers, timeout)
-            results[index] = _OneRequest(status, 0.0)
+            status, body, _hdrs = request_json(method, url, payload, headers, timeout)
+            results[index] = _OneRequest(status, 0.0, None, body)
         except Exception as exc:  # transport failure is data, not a crash
             results[index] = _OneRequest(None, 0.0, str(exc)[:200])
 
@@ -121,7 +127,7 @@ def _fire_burst(
             out.append(_OneRequest(None, 0.0, "no result"))
         else:
             skew = (start_times[index] - base) * 1000.0 if start_times[index] else 0.0
-            out.append(_OneRequest(result.status, skew, result.error))
+            out.append(_OneRequest(result.status, skew, result.error, result.body))
     return out
 
 
@@ -137,7 +143,20 @@ def run_burst_check(
     expect_delta: int = 1,
     timeout: float = 10.0,
     allow_remote: bool = False,
+    verify_headers: dict[str, str] | None = None,
+    idempotency_key: str | None = None,
+    idempotency_header: str = "Idempotency-Key",
+    compare_responses: bool = False,
+    ignore_fields: list[str] | None = None,
 ) -> Verdict:
+    """idempotency_key, if given, is sent on EVERY request in a round
+    (with {round} substituted per round, like the payload). That is
+    the burst form of the idempotency test: N simultaneous sends
+    sharing one key must still produce exactly one side effect.
+    It is an additional deduplication path, not a replacement for
+    slot uniqueness — a server that deduplicates by slot alone
+    will also pass this, and the report records which key was used
+    so the distinction is visible."""
     if not is_localhost(url) and not allow_remote:
         return Verdict(
             "burst",
@@ -155,11 +174,39 @@ def run_burst_check(
         )
     if n < 2:
         return Verdict("burst", "INCONCLUSIVE", "burst size n must be >= 2", {"n": n})
+    if rounds < 1:
+        # Zero rounds used to PASS ("exactly 1 side effect(s) per
+        # round across 0 round(s)") — green on nothing, the same
+        # vacuous class as an empty suite. Refuse it.
+        return Verdict("burst", "INCONCLUSIVE", "burst rounds must be >= 1",
+                       {"rounds": rounds})
+    if expect_delta < 0:
+        return Verdict("burst", "INCONCLUSIVE",
+                       "expected delta must be >= 0", {"expect_delta": expect_delta})
+    if compare_responses and not idempotency_key:
+        # Without a shared key, N sends are N different operations
+        # whose responses SHOULD differ (different ids) — comparing
+        # them would fail every honest server. The comparison only
+        # means something when all N sends share one key.
+        return Verdict("burst", "INCONCLUSIVE",
+                       "compare-responses needs --idempotency-key: without "
+                       "a shared key, differing responses are correct",
+                       {"url": url})
+    # A burst measures side effects; a GET/HEAD burst creates none,
+    # so its delta 0 would misread as a deduplication finding.
+    method = str(method).upper()
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return Verdict("burst", "INCONCLUSIVE",
+                       f"burst method must mutate (POST/PUT/PATCH/DELETE), "
+                       f"got {method!r}", {"url": url})
 
     headers = headers or {}
     round_results = []
     failed_rounds = []
     for round_no in range(1, rounds + 1):
+        round_headers = dict(headers)
+        if idempotency_key:
+            round_headers[idempotency_header] = _render(idempotency_key, round_no)
         round_payload = payload
         if isinstance(payload, str):
             round_payload = _render(payload, round_no)
@@ -171,14 +218,14 @@ def run_burst_check(
             rendered = json.dumps(payload).replace("{round}", str(round_no))
             round_payload = json.loads(rendered)
         try:
-            before = _read_state(verify_cmd, verify_url, round_no)
+            before = _read_state(verify_cmd, verify_url, round_no, verify_headers)
         except Exception as exc:
             return Verdict("burst", "INCONCLUSIVE",
                            f"could not read state before round {round_no}: {exc}",
                            {"round": round_no})
-        fired = _fire_burst(method, url, round_payload, headers, n, timeout)
+        fired = _fire_burst(method, url, round_payload, round_headers, n, timeout)
         try:
-            after = _read_state(verify_cmd, verify_url, round_no)
+            after = _read_state(verify_cmd, verify_url, round_no, verify_headers)
         except Exception as exc:
             return Verdict("burst", "INCONCLUSIVE",
                            f"could not read state after round {round_no}: {exc}",
@@ -197,7 +244,31 @@ def run_burst_check(
             "statuses": statuses,
             "send_skew_ms": round(skew_ms, 2),
             "transport_errors": errors,
+            "responses_match": None,
         }
+        if compare_responses:
+            # All N sends share one key, so all 2xx responses
+            # should be the ONE stored response. A server that
+            # dedupes the write but mints fresh ids per response
+            # passes the delta and still lies to N-1 callers.
+            ignored = set(ignore_fields or [])
+            stripped = []
+            for r in fired:
+                if r.status is not None and 200 <= r.status < 300:
+                    body = r.body
+                    if isinstance(body, dict):
+                        body = {k: v for k, v in body.items()
+                                if k not in ignored}
+                    stripped.append(json.dumps(body, sort_keys=True,
+                                               default=str))
+            distinct = sorted(set(stripped))
+            record["responses_match"] = len(distinct) <= 1
+            record["distinct_responses"] = len(distinct)
+            if len(distinct) > 1:
+                ok = False
+                record["response_problem"] = (
+                    f"round {round_no}: {len(distinct)} distinct replay "
+                    f"responses across {len(stripped)} sends sharing one key")
         round_results.append(record)
         if not ok:
             failed_rounds.append(round_no)
@@ -208,16 +279,25 @@ def run_burst_check(
         "rounds": rounds,
         "rounds_failed": failed_rounds,
         "per_round": round_results,
+        "idempotency_key": idempotency_key,
+        "idempotency_header": idempotency_header if idempotency_key else None,
     }
     if failed_rounds:
         worst = max(r["delta"] for r in round_results)
-        return Verdict(
-            "burst",
-            "FAIL",
-            f"duplicate side effects in round(s) {failed_rounds}: "
-            f"largest delta {worst}, expected {expect_delta}",
-            evidence,
-        )
+        resp_problems = [r["response_problem"] for r in round_results
+                         if "response_problem" in r]
+        summary = (f"duplicate side effects in round(s) {failed_rounds}: "
+                   f"largest delta {worst}, expected {expect_delta}")
+        if resp_problems:
+            # A round can fail on responses alone (delta correct):
+            # the duplicate-side-effects wording would misdiagnose
+            # it, so name the response problem instead when the
+            # deltas are all as expected.
+            if all(r["delta"] == expect_delta for r in round_results):
+                summary = "; ".join(resp_problems)
+            else:
+                summary += "; " + "; ".join(resp_problems)
+        return Verdict("burst", "FAIL", summary, evidence)
     return Verdict(
         "burst",
         "PASS",

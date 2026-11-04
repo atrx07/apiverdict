@@ -1,0 +1,92 @@
+# apiverdict in CI — GitHub Actions workflow.
+#
+# DO NOT place this under .github/workflows/ via the agent push route:
+# that route returns 403 on workflow files. Paste this file into your
+# repo at .github/workflows/apiverdict.yml yourself (web UI or git
+# from your own machine), then it runs on every push/PR.
+#
+# What it does:
+#   1. Installs apiverdict from the repo (stdlib only, no keys).
+#   2. Proves the tool itself works: the bundled fixtures must show
+#      naive FAIL / fixed PASS behaviour (a tool that cannot catch
+#      its own seeded bugs is not worth running against your API).
+#   3. Runs your real checks from your OpenAPI spec against your
+#      staging API, and uploads the JUnit report as an artifact.
+#      The job fails on exit 1 (a check failed) or exit 2
+#      (a check could not verify — never green on a skipped check).
+#
+# Replace the placeholders before use:
+#   STAGING_BASE_URL — your staging API, e.g. https://staging.example.com
+#   API_SPEC         — path to your JSON OpenAPI spec in the repo
+#   APIVERDICT_ENV   — named environment from your config, if you use one
+#   API_TOKEN        — only if your staging API needs a bearer token;
+#                      store it as a GitHub secret, never in the file.
+# Mutating checks (burst, idempotency, webhook, cache, if-match,
+# delete-replay, patch-preserves, and the other write checks) are NOT
+# in this workflow on purpose: they create resources. Run them against staging
+# from a separate, manually-triggered workflow with --allow-remote,
+# after reading the safety section of the README.
+
+name: apiverdict
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api-behaviour:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install apiverdict
+        run: pip install .
+
+      - name: Prove the tool catches its own seeded bugs
+        # Actions runs bash with -e, so the naive step must be in an
+        # OR list: `cmd; test $?` would exit on cmd's exit 1 before
+        # the test ever runs. `cmd || test $? -eq 1` passes only when
+        # the naive run fails exactly as expected (exit 1).
+        run: |
+          apiverdict demo --mode naive || test $? -eq 1
+          apiverdict demo --mode fixed
+          apiverdict library --mode naive || test $? -eq 1
+          apiverdict library --mode fixed
+          apiverdict casestudy --mode naive || test $? -eq 1
+          apiverdict casestudy --mode fixed
+          # Suite config validation needs no server: dry-run only
+          # prints check names, so a broken config fails here
+          # instead of mid-run.
+          apiverdict suite --config examples/suite.json --dry-run
+
+      - name: Show the generated check plan
+        # Plan-only prints what the spec run below would execute
+        # (pagination, error-shape, burst candidates) without
+        # touching the network — so when a run reports "no
+        # runnable checks", the plan in the log says why.
+        run: |
+          apiverdict openapi \
+            --spec API_SPEC \
+            --base-url STAGING_BASE_URL \
+            --plan-only
+
+      - name: Run behaviour checks from the OpenAPI spec
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+        run: |
+          apiverdict openapi \
+            --spec API_SPEC \
+            --base-url STAGING_BASE_URL \
+            --junit reports/apiverdict.xml
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apiverdict-junit
+          path: reports/apiverdict.xml

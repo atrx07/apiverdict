@@ -1,0 +1,100 @@
+{
+  "checks": [
+    {
+      "check": "burst",
+      "url": "http://127.0.0.1:8765/api/book",
+      "payload": {
+        "slot": "suite-{round}"
+      },
+      "n": 10,
+      "rounds": 2,
+      "verify_url": "http://127.0.0.1:8765/api/count?slot=suite-{round}",
+      "expect_delta": 1
+    },
+    {
+      "check": "pagination",
+      "url": "http://127.0.0.1:8765/api/items",
+      "page_size": 10
+    },
+    {
+      "check": "pagination-consistency",
+      "url": "http://127.0.0.1:8765/api/items",
+      "page_size_a": 10,
+      "page_size_b": 5
+    },
+    {
+      "check": "error-shape",
+      "targets": [
+        {
+          "method": "POST",
+          "url": "http://127.0.0.1:8765/api/book"
+        },
+        {
+          "method": "POST",
+          "url": "http://127.0.0.1:8765/api/order"
+        }
+      ],
+      "invalid_payload": {
+        "__invalid__": true
+      }
+    },
+    {
+      "check": "error-variants",
+      "url": "http://127.0.0.1:8765/api/variant"
+    },
+    {
+      "check": "auth-matrix",
+      "roles": [
+        {
+          "name": "admin",
+          "headers": {
+            "X-Role": "admin"
+          }
+        },
+        {
+          "name": "user",
+          "headers": {
+            "X-Role": "user"
+          }
+        },
+        {
+          "name": "anonymous",
+          "headers": {}
+        }
+      ],
+      "targets": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:8765/api/admin",
+          "allowed_roles": [
+            "admin"
+          ]
+        }
+      ]
+    },
+    {
+      "check": "rate-limit",
+      "url": "http://127.0.0.1:8765/api/rate-limited",
+      "requests": 20
+    },
+    {
+      "check": "idempotency",
+      "url": "http://127.0.0.1:8765/api/book",
+      "payload": {
+        "slot": "suite-idem"
+      },
+      "verify_url": "http://127.0.0.1:8765/api/count?slot=suite-idem"
+    },
+    {
+      "check": "spec-diff",
+      "old_spec": "openapi-sample.json",
+      "new_spec": "openapi-sample.json"
+    },
+    {
+      "check": "filter",
+      "url": "http://127.0.0.1:8765/api/items",
+      "field": "id",
+      "value": "1"
+    }
+  ]
+}

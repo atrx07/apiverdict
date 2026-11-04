@@ -1,0 +1,5 @@
+[
+  {"name": "admin", "headers": {"X-Role": "admin"}},
+  {"name": "user", "headers": {"X-Role": "user"}},
+  {"name": "anonymous", "headers": {}}
+]

@@ -14,32 +14,69 @@ from .burst import run_burst_check
 from .error_shape import run_error_shape_check
 from .fixture import create_server
 from .pagination import run_pagination_check
-from .runner import Verdict, build_report
+from .runner import Verdict, build_report, run_parallel, time_verdict
 
 
-def run_all_checks(base_url: str) -> list[Verdict]:
+def run_all_checks(base_url: str, headers: dict | None = None, timeout: float = 10.0) -> list[Verdict]:
     """Run the three v1 checks against a base URL (fixture or real API).
 
     Burst uses a per-round slot so each round is isolated; pagination
     walks /api/items; error-shape probes /api/book and /api/order.
     """
-    burst = run_burst_check(
+    burst = time_verdict(lambda: run_burst_check(
         url=f"{base_url}/api/book",
         payload={"slot": "demo-slot-{round}"},
+        headers=headers,
         n=10,
         rounds=2,
         verify_url=f"{base_url}/api/count?slot=demo-slot-{{round}}",
-        expect_delta=1,
-    )
-    pagination = run_pagination_check(url=f"{base_url}/api/items", page_size=10)
-    errors = run_error_shape_check(
+        expect_delta=1, timeout=timeout,
+        verify_headers=headers,
+    ))
+    pagination = time_verdict(lambda: run_pagination_check(
+        url=f"{base_url}/api/items", page_size=10,
+        headers=headers, timeout=timeout))
+    errors = time_verdict(lambda: run_error_shape_check(
         targets=[
             {"method": "POST", "url": f"{base_url}/api/book"},
             {"method": "POST", "url": f"{base_url}/api/order"},
         ],
         invalid_payload={"__invalid__": True},
-    )
+        headers=headers, timeout=timeout,
+    ))
     return [burst, pagination, errors]
+
+
+def run_all_checks_parallel(base_url: str, headers: dict | None = None,
+                            timeout: float = 10.0) -> list[Verdict]:
+    """Same trio as run_all_checks, run concurrently.
+
+    Only the trio, and only because its endpoints are independent for
+    the fixture (burst counts by slot; error probes carry no slot;
+    pagination only reads). Do not generalise this to arbitrary
+    check sets against a shared target without checking that their
+    writes cannot interact — parallel checks that write to the same
+    resource test each other, not the API. Output order is the trio
+    order, not completion order (see runner.run_parallel).
+    """
+    return run_parallel([
+        ("burst", lambda: run_burst_check(
+            url=f"{base_url}/api/book",
+            payload={"slot": "demo-slot-{round}"},
+            headers=headers, n=10, rounds=2,
+            verify_url=f"{base_url}/api/count?slot=demo-slot-{{round}}",
+            expect_delta=1, timeout=timeout, verify_headers=headers)),
+        ("pagination", lambda: run_pagination_check(
+            url=f"{base_url}/api/items", page_size=10,
+            headers=headers, timeout=timeout)),
+        ("error-shape", lambda: run_error_shape_check(
+            targets=[
+                {"method": "POST", "url": f"{base_url}/api/book"},
+                {"method": "POST", "url": f"{base_url}/api/order"},
+            ],
+            invalid_payload={"__invalid__": True},
+            headers=headers, timeout=timeout)),
+    ])
 
 
 def run_demo(mode: str) -> dict:
