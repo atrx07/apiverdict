@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apiverdict"
-version = "0.4.0"
-description = "API behaviour toolkit: 27 invariant checks (burst, pagination, error-shape, auth-matrix, rate-limit, idempotency, webhook, cache, spec-diff, and more) with unified CI verdicts"
+version = "0.4.1"
+description = "API behaviour toolkit: 28 invariant checks (burst, pagination, error-shape, auth-matrix, rate-limit, idempotency, webhook, cache, spec-diff, and more) with unified CI verdicts"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

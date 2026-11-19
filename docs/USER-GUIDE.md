@@ -424,6 +424,25 @@ replay, not scoped creation for reject-model servers.
 **Does not prove:** anything about the key on one endpoint
 alone — that is `idempotency` and `idempotency-variants`.
 
+### idempotency-failed-retry — a failed send must not poison the key
+
+```bash
+apiverdict idempotency-failed-retry --url http://127.0.0.1:8000/api/book \
+  --payload '{"slot": "slot-1"}' \
+  --verify-url 'http://127.0.0.1:8000/api/count?slot=slot-1'
+```
+
+The first send uses the default invalid payload
+(`{"__invalid__": true}`); the retry uses `--payload` with the
+same key. A server that records a key as merely "seen" replays
+the stored failure when the client corrects and retries — the
+retry Stripe and AWS tell clients to make after an uncertain
+request. Only record a key once the operation succeeds.
+**Does not prove:** anything when the invalid input is accepted
+(2xx) or crashes the server (5xx) — both are INCONCLUSIVE, not
+a verdict on poisoned state, because there is no clean failed
+attempt to judge.
+
 ### delete-replay — DELETE twice, second must not change state
 
 ```bash
@@ -816,9 +835,13 @@ a 401 the spec never documents fails as an undocumented
 status — which is the probe's missing auth showing up as a
 contract gap, so read that FAIL as "authenticate the probe
 or document the 401" before blaming the server.
-`query` operations (3.2) are listed in `unjudged` with
-the reason, never silently dropped: judging a QUERY 200
-needs a request body the checker cannot invent.
+`query` operations (3.2) are judged when a valid request body
+can be built from the requestBody schema (example > default >
+type placeholder, the same rule as query-param filling); a
+non-200 for that schema-derived body is listed in `unjudged`,
+never a FAIL, because a rejection of invented data proves
+nothing. A QUERY operation with no buildable body is listed
+in `unjudged` with the reason, never silently dropped.
 Values under `additionalProperties` schemas are checked, so an
 inventory-style map endpoint is judged on its values, not just on
 being an object.
@@ -892,9 +915,9 @@ most often missed on a first read:
 - `--header 'Name: value'` (repeatable, every live command):
   extra headers; wins over `--config` values.
 - `--verify-header 'Name: value'` (repeatable, burst /
-  idempotency / idempotency-variants / idempotency-scope /
-  webhook): headers for verify reads only; defaults to the
-  check's own headers when omitted.
+  idempotency / idempotency-variants / idempotency-failed-retry /
+  idempotency-scope / webhook): headers for verify reads only;
+  defaults to the check's own headers when omitted.
 - `--id-field` (pagination family, detail-superset): row id field, dotted paths
   allowed (`item.id`). `--compare-field` (cache): field to
   compare across reads, dotted paths allowed.

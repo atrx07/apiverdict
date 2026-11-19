@@ -56,10 +56,13 @@ response against its schema (or the 2XX wildcard's, when no
     be fetched, is recorded as UNJUDGED and the check continues with
     the other endpoints — one bad endpoint no longer aborts the
     whole check, and a check that judges nothing is INCONCLUSIVE.
-  * 3.2 `query` operations are listed as unjudged, never silently
-    dropped — judging a QUERY 200 needs a request body the
-    checker cannot invent (see the QUERY-example rejection in
-    the notes: examples are too unreliable to probe with).
+  * 3.2 `query` operations are judged when a valid request body
+    can be built from the requestBody schema (example > default >
+    type placeholder, the same rule as GET query-param filling);
+    a non-200 for that schema-derived body is unjudged, never a
+    FAIL, because a rejection of invented data proves nothing.
+    A QUERY operation with no buildable body is listed as
+    unjudged, never silently dropped.
 
 This is still NOT full JSON Schema validation — no format checks,
 no allOf/anyOf/oneOf composition, no conditional schemas. (Scalar
@@ -70,11 +73,11 @@ scope above is what stdlib can do deterministically in CI, and it
 catches the common breaking change: a field renamed, dropped,
 retyped, or moved, while the endpoint still returns 200.
 
-Non-GET endpoints are skipped (they need request bodies to be
-meaningful), as are GET endpoints with no usable 200 schema. A
-transport failure or a non-200 on any checked endpoint is
-INCONCLUSIVE, not a pass and not a conformance FAIL — the check
-cannot judge a response it never got.
+Non-GET, non-QUERY endpoints are skipped (they need request
+bodies to be meaningful), as are GET endpoints with no usable
+200 schema. A transport failure or a non-200 on any checked
+endpoint is INCONCLUSIVE, not a pass and not a conformance
+FAIL — the check cannot judge a response it never got.
 """
 
 from __future__ import annotations
@@ -357,6 +360,152 @@ def _check(value, schema, location: str, problems: list[str], depth: int = 0,
                        problems, depth + 1, forbid_write_only)
 
 
+def _valid_value(schema: dict, spec: dict | None, depth: int = 0):
+    """A plausible valid value for a schema: example > default >
+    first enum value > type placeholder. None means no value can
+    be built. Same rule as spec_util's parameter filling and
+    error_payloads' example values — one rule for invented probe
+    data, so a QUERY body is built the way a GET probe's query
+    params already are."""
+    schema = resolve_ref(schema, spec or {}) if isinstance(schema, dict) else {}
+    if not isinstance(schema, dict):
+        return None
+    if "example" in schema:
+        return schema["example"]
+    if "default" in schema:
+        return schema["default"]
+    if isinstance(schema.get("enum"), list) and schema["enum"]:
+        return schema["enum"][0]
+    t = schema.get("type")
+    if isinstance(t, list):
+        t = next((x for x in t if x != "null"), t[0] if t else None)
+    if t == "string":
+        return "x"
+    if t == "integer":
+        return 1
+    if t == "number":
+        return 1
+    if t == "boolean":
+        return True
+    if t == "array":
+        items = schema.get("items")
+        if isinstance(items, dict) and depth < 3:
+            v = _valid_value(items, spec, depth + 1)
+            return [v] if v is not None else []
+        return []
+    if t == "object" or isinstance(schema.get("properties"), dict):
+        props = schema.get("properties") or {}
+        if not isinstance(props, dict) or not props:
+            return {}
+        out = {}
+        for name, ps in props.items():
+            if not isinstance(ps, dict):
+                continue
+            v = _valid_value(ps, spec, depth + 1)
+            if v is None and name in (schema.get("required") or []):
+                return None
+            if v is not None:
+                out[name] = v
+        return out
+    return None
+
+
+def _valid_query_body(operation: dict, spec: dict | None) -> dict | None:
+    """A valid request body for a QUERY operation, built from its
+    requestBody schema. None when no usable body can be built —
+    the operation stays unjudged, as before, rather than being
+    probed with invented data that proves nothing."""
+    try:
+        body = resolve_ref(operation.get("requestBody"), spec or {})
+        schema = ((body or {}).get("content", {})
+                  .get("application/json", {}).get("schema"))
+    except Exception:
+        return None
+    if not isinstance(schema, dict):
+        return None
+    schema = resolve_ref(schema, spec or {})
+    if not isinstance(schema, dict):
+        return None
+    value = _valid_value(schema, spec)
+    if not isinstance(value, dict) or not value:
+        return None
+    if any(f not in value for f in (schema.get("required") or [])):
+        return None
+    return value
+
+
+def _judge_response(url, op, spec, schema, status, resp_body, resp_headers,
+                    checked, problems, skipped, unjudged,
+                    strict_non200=True) -> int:
+    """Judge one fetched response against the operation's schema.
+    Returns the (possibly incremented) skipped count — ints are
+    immutable, so the caller must take the return value; the
+    list arguments are mutated in place. strict_non200=False is
+    the QUERY rule: a non-200 is unjudged, not a FAIL — the
+    request body was derived from the schema, so a rejection
+    proves nothing about conformance. GET keeps the strict rule
+    (an undocumented status is itself a contract violation)."""
+    if status != 200:
+        if not strict_non200:
+            unjudged.append({"url": url, "reason": f"HTTP {status} for a "
+                             "schema-derived QUERY body; a rejection "
+                             "proves nothing"})
+            return skipped
+        responses = op.get("responses") or {}
+        documented = (str(status) in responses or "default" in responses
+                      or f"{status // 100}XX" in responses)
+        if not documented:
+            problems.append(f"{url}: returned HTTP {status}, not "
+                            f"documented by the spec")
+            checked.append(url)
+            return skipped
+        err_raw = _schema_of_status(op, spec, status)
+        err_schema = resolve_ref(err_raw, spec) if err_raw else None
+        if err_schema and _judgeable(err_schema):
+            if _judge_body(url, resp_body, err_schema, problems):
+                checked.append(url)
+            else:
+                skipped += 1
+        else:
+            unjudged.append({"url": url, "reason": f"HTTP {status}"})
+        return skipped
+    declared = _content_types(op, spec)
+    if declared:
+        actual = ""
+        for name, value in (resp_headers or {}).items():
+            if name.lower() == "content-type":
+                actual = str(value).split(";")[0].strip().lower()
+                break
+        if actual and actual not in declared:
+            problems.append(f"{url}: Content-Type {actual!r}, spec "
+                            f"declares {sorted(declared)}")
+            checked.append(url)
+            return skipped
+    if _judge_body(url, resp_body, schema, problems):
+        checked.append(url)
+    else:
+        skipped += 1
+    return skipped
+
+
+def _fetch_and_judge(method, url, op, spec, schema, request_body,
+                     headers, timeout, checked, problems, skipped,
+                     unjudged, strict_non200=True) -> int:
+    """Fetch one endpoint and judge the response. Returns the new
+    skipped count (see _judge_response). One unreachable endpoint
+    must not abort the whole check: it is recorded as unjudged
+    and the check continues with the rest."""
+    try:
+        status, resp_body, resp_headers = request_json(
+            method, url, request_body, headers=headers, timeout=timeout)
+    except Exception as exc:
+        unjudged.append({"url": url, "reason": f"request failed: {exc}"})
+        return skipped
+    return _judge_response(url, op, spec, schema, status, resp_body,
+                           resp_headers, checked, problems, skipped,
+                           unjudged, strict_non200)
+
+
 def run_spec_conformance_check(spec: dict, base_url: str,
                                headers: dict | None = None,
                                timeout: float = 10.0) -> Verdict:
@@ -370,13 +519,42 @@ def run_spec_conformance_check(spec: dict, base_url: str,
             continue
         query_op = path_item.get("query")
         if isinstance(query_op, dict):
-            # QUERY is a defined read method (RFC 10008), but
-            # judging its 200 needs a request body the checker
-            # cannot invent — so it is listed as unjudged,
-            # never silently ignored and never a false FAIL.
-            unjudged.append({"url": f"{base_url}{path}",
-                             "reason": "QUERY operation not judged "
-                                       "(needs a request body)"})
+            # QUERY is a defined read method (RFC 10008). Its 200
+            # is judged when a valid body can be built from the
+            # requestBody schema; otherwise it is listed as
+            # unjudged, never silently ignored and never a false
+            # FAIL. A non-200 for a schema-derived body is also
+            # unjudged (see _judge_response): a rejection of
+            # invented data proves nothing.
+            q_raw = _schema_of(query_op, spec)
+            if not q_raw:
+                skipped += 1
+            else:
+                q_schema = resolve_ref(q_raw, spec)
+                if not _judgeable(q_schema):
+                    skipped += 1
+                else:
+                    q_body = _valid_query_body(query_op, spec)
+                    if q_body is None:
+                        unjudged.append({"url": f"{base_url}{path}",
+                                         "reason": "QUERY operation not "
+                                                   "judged (needs a request "
+                                                   "body)"})
+                    else:
+                        q_params = (list(path_item.get("parameters") or [])
+                                    + list(query_op.get("parameters") or []))
+                        q_filled = fill_path_params(path, q_params, spec)
+                        if q_filled != path:
+                            filled.append(q_filled)
+                        q_query = fill_query_params(q_params, spec)
+                        q_url = f"{base_url}{q_filled}"
+                        if q_query:
+                            q_url = (q_url + "?"
+                                     + urllib.parse.urlencode(q_query))
+                        skipped = _fetch_and_judge(
+                            "QUERY", q_url, query_op, spec, q_schema,
+                            q_body, headers, timeout, checked, problems,
+                            skipped, unjudged, strict_non200=False)
         get_op = path_item.get("get")
         if not isinstance(get_op, dict):
             continue
@@ -402,56 +580,9 @@ def run_spec_conformance_check(spec: dict, base_url: str,
         url = f"{base_url}{filled_path}"
         if query:
             url = url + "?" + urllib.parse.urlencode(query)
-        try:
-            status, body, resp_headers = request_json("GET", url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            # One unreachable endpoint must not abort the whole check:
-            # record it as unjudged and keep checking the rest. A check
-            # that judges nothing is still INCONCLUSIVE at the end.
-            unjudged.append({"url": url, "reason": f"request failed: {exc}"})
-            continue
-        if status != 200:
-            # An UNDOCUMENTED status is a contract violation in
-            # itself: the spec's contract never covered that
-            # response, so it fails instead of passing silently.
-            # A DOCUMENTED status with a declared error schema gets
-            # its body judged against that schema (exact code, then
-            # wildcard, then default); documented without a schema
-            # stays unjudged, as before.
-            responses = get_op.get("responses") or {}
-            documented = (str(status) in responses or "default" in responses
-                          or f"{status // 100}XX" in responses)
-            if not documented:
-                problems.append(f"{url}: returned HTTP {status}, not "
-                                f"documented by the spec")
-                checked.append(url)
-                continue
-            err_raw = _schema_of_status(get_op, spec, status)
-            err_schema = resolve_ref(err_raw, spec) if err_raw else None
-            if err_schema and _judgeable(err_schema):
-                if _judge_body(url, body, err_schema, problems):
-                    checked.append(url)
-                else:
-                    skipped += 1
-            else:
-                unjudged.append({"url": url, "reason": f"HTTP {status}"})
-            continue
-        declared = _content_types(get_op, spec)
-        if declared:
-            actual = ""
-            for name, value in (resp_headers or {}).items():
-                if name.lower() == "content-type":
-                    actual = str(value).split(";")[0].strip().lower()
-                    break
-            if actual and actual not in declared:
-                problems.append(f"{url}: Content-Type {actual!r}, spec "
-                                f"declares {sorted(declared)}")
-                checked.append(url)
-                continue
-        if _judge_body(url, body, schema, problems):
-            checked.append(url)
-        else:
-            skipped += 1
+        skipped = _fetch_and_judge("GET", url, get_op, spec, schema, None,
+                                   headers, timeout, checked, problems,
+                                   skipped, unjudged)
 
     evidence = {"checked_endpoints": checked, "skipped": skipped,
                 "problems": problems, "filled_paths": filled,

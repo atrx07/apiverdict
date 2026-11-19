@@ -115,12 +115,60 @@ def run_parallel(named: list[tuple[str, Callable[[], Verdict]]]) -> list[Verdict
         return verdicts
 
 
+# One-line remediation hint per check, shown only for FAIL lines in
+# summarize(). Plain text only — the JSON report schema is unchanged,
+# so consumers that pin it are unaffected. A hint names the fix
+# direction, not the fixture; an unknown check gets the generic one.
+REMEDIATION = {
+    "burst": "Enforce a unique constraint or idempotency key on the dedup field, so a second identical write is a no-op or a 409.",
+    "pagination": "Give the list a stable sort (e.g. ORDER BY id) and page from it; a walk must return every row exactly once.",
+    "pagination-concurrent": "Use cursor pagination anchored on the last row seen; offset pages drift when rows are inserted mid-walk.",
+    "pagination-consistency": "Compute the total from the same query as the rows, so every page size agrees on sequence and total.",
+    "error-shape": "Emit every error from one central handler so all endpoints share one shape.",
+    "error-variants": "Route every invalid payload kind through the same validation path; a malformed body must 4xx, never 2xx/5xx.",
+    "error-leak": "Strip tracebacks, file paths and SQL from error bodies; log them server-side instead.",
+    "auth-matrix": "Deny by default: every endpoint must check the caller's role, and an unknown role gets 401/403.",
+    "rate-limit": "Enforce the limit from a shared counter (not per-process) and return 429 with Retry-After once it is hit.",
+    "idempotency": "Store the key with the completed response, atomically (e.g. INSERT ... ON CONFLICT), and replay it on retry.",
+    "idempotency-variants": "A reused key with a different payload must return the original result or a 4xx conflict — never create a second resource.",
+    "idempotency-scope": "Scope keys per operation (tenant + endpoint + key); a key for one endpoint must not replay on another.",
+    "idempotency-failed-retry": "Only record an idempotency key once the operation succeeds; a failed attempt must leave the key free for a corrected retry.",
+    "webhook": "Verify the HMAC signature, reject stale timestamps, and dedupe by event id before applying the event.",
+    "cache": "Invalidate or update the cached entry on write; a read after a write must see the write.",
+    "cache-etag": "Emit an ETag that changes on every write and honour If-None-Match with 304.",
+    "spec-conformance": "Fix the implementation or the spec so they agree — a response the spec does not describe is a contract break.",
+    "head-consistency": "Make HEAD return the same status and headers as GET (minus the body).",
+    "cors": "Return Access-Control-Allow-Origin and Allow-Methods covering the requested method on preflight.",
+    "delete-replay": "Make DELETE idempotent: a replay must not delete a second row or error with a 5xx.",
+    "patch-preserves": "Apply only the fields present in the PATCH body; leave every other field untouched.",
+    "detail-superset": "The detail response must include every field the list row carries, with the same types.",
+    "method-guards": "Return 405 with an Allow header listing only the methods the endpoint actually supports.",
+    "cache-privacy": "Never serve a cached response built for one caller to another; vary the cache key by caller.",
+    "auth-schemes": "Accept the token only under its own scheme; reject it under Basic, Digest, Token, and bare.",
+    "redirect": "Keep redirect chains short, acyclic, and never downgrade https to http.",
+    "filter": "Apply the filter predicate to every row before paging; a row that fails the filter must never appear.",
+    "if-match": "Compare If-Match against the current ETag and reject stale values with 412/409 without changing state.",
+}
+
+_GENERIC_HINT = ("See the check's documentation for what it proves and "
+                 "what it does not prove.")
+
+
+def remediation_hint(check_name: str) -> str:
+    """The next-step hint for a failed check (generic fallback for
+    checks not in the map, e.g. a plugin check)."""
+    return REMEDIATION.get(check_name, _GENERIC_HINT)
+
+
 def summarize(report: dict[str, Any]) -> str:
     """One plain-language failure summary for a report.
 
     The per-check lines above already carry the detail; this is the
     line a CI reader scans first: what failed, what could not verify,
-    and what that means for the exit code.
+    and what that means for the exit code. Failed lines carry a
+    remediation hint; inconclusive lines do not (their cause is a
+    verification problem, not a behaviour fix, so a behaviour hint
+    would misdiagnose them).
     """
     checks = report["checks"]
     failed = [c for c in checks if c["status"] == "FAIL"]
@@ -135,7 +183,10 @@ def summarize(report: dict[str, Any]) -> str:
         parts.append(f"{len(inconclusive)} could not verify: "
                      f"{', '.join(c['check'] for c in inconclusive)}")
     lines = ["; ".join(parts) + f" ({passed} passed)."]
-    for check in failed + inconclusive:
+    for check in failed:
+        lines.append(f"  ! {check['check']}: {check['summary']} "
+                     f"-> {remediation_hint(check['check'])}")
+    for check in inconclusive:
         lines.append(f"  ! {check['check']}: {check['summary']}")
     return "\n".join(lines)
 

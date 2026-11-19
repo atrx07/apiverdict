@@ -58,6 +58,7 @@ from .demo import run_all_checks, run_all_checks_parallel, run_demo
 from .fixture import serve_forever
 from .http_util import is_localhost, validate_url
 from .idempotency import (run_idempotency_check,
+                            run_idempotency_failed_retry_check,
                             run_idempotency_scope_check,
                             run_idempotency_variants_check)
 from .library import run_library
@@ -242,6 +243,7 @@ def _validate_args(args) -> None:
     # creates nothing, so its delta 0 would misread as a finding.
     if getattr(args, "command", None) in ("burst", "idempotency",
                                           "idempotency-variants",
+                                          "idempotency-failed-retry",
                                           "idempotency-scope"):
         m = getattr(args, "method", None)
         if m and m.upper() not in ("POST", "PUT", "PATCH", "DELETE"):
@@ -479,6 +481,31 @@ def main(argv: list[str] | None = None) -> int:
     _add_auth_args(idem_p)
     _add_timeout(idem_p)
     _add_junit(idem_p)
+
+    idemf_p = sub.add_parser("idempotency-failed-retry",
+                             help="failed send with a key, then a valid retry "
+                                  "with the same key; the retry must create")
+    idemf_p.add_argument("--url", required=True)
+    idemf_p.add_argument("--method", default="POST")
+    idemf_p.add_argument("--payload", default='{"slot": "slot-1"}',
+                         help="valid payload for the retry (default "
+                              '{"slot": "slot-1"})')
+    idemf_p.add_argument("--invalid-payload", default='{"__invalid__": true}',
+                         help="payload for the first, failing send "
+                              "(default {\"__invalid__\": true})")
+    idemf_p.add_argument("--key", default="apiverdict-failed-retry-1")
+    idemf_p.add_argument("--key-header", default="Idempotency-Key")
+    idemf_p.add_argument("--verify-cmd")
+    idemf_p.add_argument("--verify-url")
+    idemf_p.add_argument("--verify-header", action="append", default=[],
+                         help="header 'Name: value' for verify reads only "
+                              "(repeatable; defaults to the check headers)")
+    idemf_p.add_argument("--allow-remote", action="store_true",
+                         help="required for non-localhost targets (mutating check)")
+    idemf_p.add_argument("--json", action="store_true")
+    _add_auth_args(idemf_p)
+    _add_timeout(idemf_p)
+    _add_junit(idemf_p)
 
     scope_p = sub.add_parser("idempotency-scope",
                                help="same key to two endpoints; B must create, never replay A")
@@ -1075,6 +1102,24 @@ def main(argv: list[str] | None = None) -> int:
         return _report(run_idempotency_variants_check(
             url=args.url, method=args.method, payload=payload,
             alt_payload=alt, headers=headers,
+            idempotency_key=args.key, idempotency_header=args.key_header,
+            verify_cmd=args.verify_cmd, verify_url=args.verify_url,
+            verify_headers=_verify_headers_for(args),
+            allow_remote=args.allow_remote, timeout=args.timeout), args.json, getattr(args, "junit", None))
+
+    if args.command == "idempotency-failed-retry":
+        headers, _ev = _auth_for(args)
+        try:
+            payload = json.loads(args.payload)
+        except ValueError:
+            payload = args.payload
+        try:
+            invalid = json.loads(args.invalid_payload)
+        except ValueError:
+            invalid = args.invalid_payload
+        return _report(run_idempotency_failed_retry_check(
+            url=args.url, method=args.method, payload=payload,
+            invalid_payload=invalid, headers=headers,
             idempotency_key=args.key, idempotency_header=args.key_header,
             verify_cmd=args.verify_cmd, verify_url=args.verify_url,
             verify_headers=_verify_headers_for(args),

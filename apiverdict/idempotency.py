@@ -262,6 +262,120 @@ def run_idempotency_variants_check(
                    evidence)
 
 
+def run_idempotency_failed_retry_check(
+    url: str,
+    method: str = "POST",
+    payload: object | None = None,
+    invalid_payload: object | None = None,
+    headers: dict[str, str] | None = None,
+    idempotency_key: str = "apiverdict-failed-retry-1",
+    idempotency_header: str = "Idempotency-Key",
+    verify_cmd: str | None = None,
+    verify_url: str | None = None,
+    timeout: float = 10.0,
+    allow_remote: bool = False,
+    verify_headers: dict[str, str] | None = None,
+) -> Verdict:
+    """Failed-request idempotency retry: a failed attempt must not
+    poison the key for a corrected retry.
+
+    1. Send an INVALID request with key K -> expect a 4xx. (If the
+       server accepts the invalid input with a 2xx, that is
+       error-shape's finding, not this check's; if it 5xxes, the
+       retry judgement is muddied by a possible partial apply —
+       both are INCONCLUSIVE here, never a verdict on poisoned
+       state we cannot trust.)
+    2. Send the VALID request with the same key K -> it must
+       create exactly one resource (delta 1, 2xx).
+
+    The bug this catches is the "key recorded as merely seen"
+    server: it stores K on the first attempt regardless of
+    outcome, then replays the stored failure (or blocks) when
+    the client corrects and retries — the exact retry Stripe
+    and AWS tell clients to make after an uncertain request.
+    Only record a key once the operation succeeds.
+    """
+    refused = mutating_guard(url, allow_remote)
+    if refused:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       refused, {"url": url})
+    method = str(method).upper()
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"idempotency method must mutate (POST/PUT/PATCH/DELETE), "
+                       f"got {method!r}", {"url": url})
+    if verify_cmd is None and verify_url is None:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       "no verify command or verify URL: final state "
+                       "cannot be checked", {})
+    if payload is None:
+        # Without a valid payload the retry itself is an invalid
+        # send, and its 400 would misreport as "poisoned". Refuse
+        # it instead of judging a retry that was never valid.
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       "no valid payload supplied for the retry", {})
+    if invalid_payload is None:
+        invalid_payload = {"__invalid__": True}
+    headers = dict(headers or {})
+    headers[idempotency_header] = idempotency_key
+    try:
+        before = _read_state(verify_cmd, verify_url, 1,
+                             verify_headers=verify_headers if verify_headers is not None else headers)
+    except Exception as exc:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"could not read state before sends: {exc}", {})
+    try:
+        first_status, _b, _h = request_json(
+            method, url, invalid_payload, headers, timeout=timeout)
+    except Exception as exc:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"invalid send failed: {exc}", {})
+    if 200 <= first_status < 300:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"invalid input was accepted (HTTP {first_status}): "
+                       "no failed attempt exists to judge — see "
+                       "error-shape", {"first_status": first_status})
+    if first_status >= 500:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"invalid input crashed the server (HTTP "
+                       f"{first_status}): a retry after a partial apply "
+                       "cannot be judged", {"first_status": first_status})
+    try:
+        retry_status, _b2, _h2 = request_json(
+            method, url, payload, headers, timeout=timeout)
+    except Exception as exc:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"retry send failed: {exc}",
+                       {"first_status": first_status})
+    try:
+        after = _read_state(verify_cmd, verify_url, 1,
+                            verify_headers=verify_headers if verify_headers is not None else headers)
+    except Exception as exc:
+        return Verdict("idempotency-failed-retry", "INCONCLUSIVE",
+                       f"could not read state after retry: {exc}",
+                       {"first_status": first_status,
+                        "retry_status": retry_status})
+    delta = after - before
+    evidence = {"url": url, "key_header": idempotency_header,
+                "first_status": first_status, "retry_status": retry_status,
+                "before": before, "after": after, "delta": delta,
+                "expected_delta": 1}
+    problems = []
+    if not (200 <= retry_status < 300):
+        problems.append(f"failed attempt poisoned the key: corrected "
+                        f"retry returned HTTP {retry_status} instead of "
+                        "creating the resource")
+    if delta != 1:
+        problems.append(f"corrected retry delta {delta}, expected 1")
+    if problems:
+        return Verdict("idempotency-failed-retry", "FAIL",
+                       "; ".join(problems), evidence)
+    return Verdict("idempotency-failed-retry", "PASS",
+                   "failed attempt did not poison the key: corrected "
+                   "retry created exactly 1 resource",
+                   evidence)
+
+
 def run_idempotency_scope_check(
     url_a: str,
     url_b: str,
@@ -377,4 +491,5 @@ def run_idempotency_scope_check(
                    evidence)
 
 
-__all__ = ["run_idempotency_check", "run_idempotency_variants_check", "run_idempotency_scope_check"]
+__all__ = ["run_idempotency_check", "run_idempotency_variants_check",
+           "run_idempotency_failed_retry_check", "run_idempotency_scope_check"]

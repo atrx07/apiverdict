@@ -10,7 +10,7 @@ Python 3.10+ stdlib only, zero dependencies, $0:
 
 ```bash
 pip install .
-apiverdict --version   # apiverdict 0.4.0
+apiverdict --version   # apiverdict 0.4.1
 # or, without installing:
 python -m apiverdict demo
 ```
@@ -225,6 +225,14 @@ apiverdict idempotency-variants --url http://127.0.0.1:8000/api/payments \
   --verify-url 'http://127.0.0.1:8000/api/payments/count?order=ord-1'
 ```
 
+`idempotency-failed-retry` covers the third idempotency failure mode: the first send with a key fails (invalid input, 4xx), and the corrected retry with the same key must still create exactly one resource. A key must only be recorded once the operation succeeds — if the failed attempt poisons the key, the retry Stripe and AWS tell clients to make is blocked. (If the invalid input is accepted with a 2xx, or crashes the server with a 5xx, the check is `INCONCLUSIVE`: there is no clean failed attempt to judge.)
+
+```bash
+apiverdict idempotency-failed-retry --url http://127.0.0.1:8000/api/book \
+  --payload '{"slot": "slot-1"}' \
+  --verify-url 'http://127.0.0.1:8000/api/count?slot=slot-1'
+```
+
 ### 7. `webhook` — signature, duplicate, replay
 
 Sends a valid signed event (HMAC-SHA256, `X-Signature-256`), a tampered body with the original signature, the same event again, and a stale replay. Valid must be acked, tampered must be 401/403, stale must be 401/403, and a duplicate must be acked without double-applying — the last part only proven when a `--verify-url`/`--verify-cmd` is supplied; without one, the duplicate cell is reported as ack-only with the side effect unverified.
@@ -254,6 +262,7 @@ apiverdict spec-check --spec api.json --base-url http://127.0.0.1:8000
 - `error-leak` — error bodies AND headers scanned for tracebacks, server paths, and SQL fragments.
 - `idempotency-variants` — same key, different payload: must add 0 more side effects.
 - `idempotency-scope` — same key on two different endpoints: must not silently replay endpoint A's result on B.
+- `idempotency-failed-retry` — a failed send with a key, then a valid retry with the same key: the retry must create exactly 1. A server that records a key as merely "seen" on the failed attempt replays the stored failure instead — the retry Stripe and AWS tell clients to make.
 - `delete-replay` — DELETE twice: first drops the count by exactly 1, replay must not change state again.
 - `patch-preserves` — PATCH one field: only that field may change; wiped or altered siblings fail.
 - `cache-etag` — a changed resource must change its ETag (or drop it); an unchanged ETag after a write is stale.
@@ -273,7 +282,7 @@ apiverdict spec-check --spec api.json --base-url http://127.0.0.1:8000
 - `spec-diff` — breaking changes between two specs (removed paths/operations/webhooks/response codes/properties, new required inputs, type changes, shrunk enums); additive changes never fail.
 - `spec-examples` — the spec's own examples match its own schemas, with spec-check's rules.
 
-`apiverdict list` shows all 27 live checks (including
+`apiverdict list` shows all 28 live checks (including
 `error-variants`, `error-leak`, `cache-etag`, and
 `idempotency-variants`, plus `idempotency-scope`, each covered
 in the user guide); the

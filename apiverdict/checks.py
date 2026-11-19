@@ -29,6 +29,7 @@ from .auth_schemes import run_auth_schemes_check
 from .redirect import run_redirect_check
 from .list_filter import run_filter_check
 from .idempotency import (run_idempotency_check,
+                            run_idempotency_failed_retry_check,
                             run_idempotency_scope_check,
                             run_idempotency_variants_check)
 from .pagination import run_pagination_check
@@ -39,7 +40,7 @@ from .webhook import run_webhook_check
 
 CHECKS = ("burst", "pagination", "pagination-concurrent", "pagination-consistency", "error-shape", "error-variants",
           "error-leak", "auth-matrix", "rate-limit", "idempotency", "idempotency-variants", "idempotency-scope", "webhook",
-          "cache", "cache-etag", "spec-conformance", "head-consistency", "cors", "delete-replay", "patch-preserves", "detail-superset", "method-guards", "cache-privacy", "auth-schemes", "redirect", "filter", "if-match")
+          "cache", "cache-etag", "spec-conformance", "head-consistency", "cors", "delete-replay", "patch-preserves", "detail-superset", "method-guards", "cache-privacy", "auth-schemes", "redirect", "filter", "if-match", "idempotency-failed-retry")
 
 CHECK_DESCRIPTIONS = {
     "burst": "N identical requests through a barrier gate; final-state delta must be 1",
@@ -69,6 +70,7 @@ CHECK_DESCRIPTIONS = {
     "redirect": "a redirect chain must be finite, acyclic, and never downgrade https to http",
     "filter": "every row of a filtered list must satisfy the filter predicate (top-level field)",
     "if-match": "current If-Match must apply, stale If-Match must be rejected without moving state",
+    "idempotency-failed-retry": "failed send with a key, then a valid retry with the same key; the retry must create exactly 1",
 }
 
 __all__ = [
@@ -79,6 +81,7 @@ __all__ = [
     "run_error_shape_check",
     "run_idempotency_check",
     "run_idempotency_variants_check",
+    "run_idempotency_failed_retry_check",
     "run_idempotency_scope_check",
     "run_pagination_check",
     "run_rate_limit_check",

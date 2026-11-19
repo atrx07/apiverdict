@@ -107,12 +107,16 @@ class TestTwoXxWildcard(unittest.TestCase):
 
 
 class TestQueryOperationsUnjudged(unittest.TestCase):
+    # A QUERY operation is judged when a valid body can be built
+    # from its requestBody schema (see test_spec_query_judge.py).
+    # These two tests pin the still-unjudged path: a 200 schema
+    # exists, but no requestBody to build a body from.
     def test_query_only_spec_is_inconclusive_with_reason(self):
         spec = {"openapi": "3.2.0", "paths": {"/search": {"query": {
-            "requestBody": {"content": {"application/json": {"schema": {
+            "responses": {"200": {"content": {"application/json": {"schema": {
                 "type": "object",
-                "properties": {"q": {"type": "string"}}}}}},
-            "responses": {"200": {"description": "ok"}}}}}}
+                "properties": {"results": {"type": "array"}},
+                "required": ["results"]}}}}}}}}}
         v = run_spec_conformance_check(spec, "http://127.0.0.1:9")
         self.assertEqual(v.status, "INCONCLUSIVE", v.summary)
         self.assertEqual(len(v.evidence["unjudged"]), 1)
@@ -123,7 +127,10 @@ class TestQueryOperationsUnjudged(unittest.TestCase):
         with FixtureServer("fixed") as base:
             spec = _spec_for_items(["items", "total"])
             spec["paths"]["/api/search"] = {"query": {
-                "responses": {"200": {"description": "ok"}}}}
+                "responses": {"200": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"results": {"type": "array"}},
+                    "required": ["results"]}}}}}}}
             v = run_spec_conformance_check(spec, base)
         self.assertEqual(v.status, "PASS", v.summary)
         urls = [u["url"] for u in v.evidence["unjudged"]]

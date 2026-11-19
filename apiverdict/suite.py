@@ -70,6 +70,7 @@ from .error_leak import run_error_leak_check
 from .error_shape import run_error_shape_check
 from .error_variants import run_error_variants_check
 from .idempotency import (run_idempotency_check,
+                            run_idempotency_failed_retry_check,
                             run_idempotency_scope_check,
                             run_idempotency_variants_check)
 from .openapi import load_spec
@@ -96,6 +97,7 @@ SUITE_CHECKS = {
     "rate-limit": run_rate_limit_check,
     "idempotency": run_idempotency_check,
     "idempotency-variants": run_idempotency_variants_check,
+    "idempotency-failed-retry": run_idempotency_failed_retry_check,
     "idempotency-scope": run_idempotency_scope_check,
     "webhook": run_webhook_check,
     "cache": run_cache_check,

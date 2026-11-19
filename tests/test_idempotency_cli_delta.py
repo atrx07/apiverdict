@@ -46,7 +46,8 @@ class TestVerifyHeaderFlag(unittest.TestCase):
             {"Authorization": "Bearer admin", "X-A": "1"})
 
     def test_help_lists_flag_on_all_four_commands(self):
-        for cmd in ("burst", "idempotency", "idempotency-variants", "webhook"):
+        for cmd in ("burst", "idempotency", "idempotency-variants",
+                    "idempotency-failed-retry", "webhook"):
             proc = subprocess.run(
                 [sys.executable, "-m", "apiverdict", cmd, "--help"],
                 capture_output=True, text=True, cwd=".")

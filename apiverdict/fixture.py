@@ -38,6 +38,10 @@ Endpoints:
   POST /api/book with Idempotency-Key -> idempotency target; fixed
       replays return the original booking with no new row, naive
       creates a new row per send.
+      A FAILED send (no slot -> 400) with a key poisons that key in
+      naive mode only: a later valid retry with the same key replays
+      the stored 400 and creates nothing. Fixed mode never records
+      a key on a failed send, so the corrected retry creates.
   POST /api/reset  -> clears bookings (tests / demo isolation only).
 
 State is guarded by a lock: in fixed mode the lock plus the slot check
@@ -73,6 +77,13 @@ class FixtureState:
         self.lock = threading.RLock()
         self.bookings: dict[str, int] = {}  # slot -> booking id counter
         self.idem_keys: dict[str, int] = {}  # Idempotency-Key -> booking id
+        # Naive-only bug for the idempotency-failed-retry check: a key
+        # first seen on a FAILED send is recorded as "seen", and later
+        # sends with that key replay the stored failure instead of
+        # creating. Fixed mode never records a key on a failed send
+        # (book_idempotent stores only on 201), so a corrected retry
+        # with the same key creates normally there.
+        self.failed_keys: dict[str, tuple[int, dict]] = {}
         self.rate_count = 0  # requests to /api/rate-limited
         # Feed for the pagination-concurrent check: new rows prepend
         # (newest first), so an offset reader mid-walk sees drift while
@@ -84,6 +95,7 @@ class FixtureState:
         with self.lock:
             self.bookings.clear()
             self.idem_keys.clear()
+            self.failed_keys.clear()
             self.rate_count = 0
             self._naive_rows = 0
             self.feed = [{"id": i, "name": f"feed-{i}"} for i in range(1, 21)]
@@ -181,6 +193,13 @@ def make_handler(state: FixtureState):
                 return
             if parsed.path == "/api/book" and "slot" in body:
                 idem_key = self.headers.get("Idempotency-Key")
+                if (idem_key and state.mode == "naive"
+                        and idem_key in state.failed_keys):
+                    # The key was poisoned by an earlier failed send:
+                    # replay the stored failure, create nothing.
+                    status, payload = state.failed_keys[idem_key]
+                    self._send(status, payload)
+                    return
                 if idem_key:
                     status, payload = state.book_idempotent(str(body["slot"]), idem_key)
                 else:
@@ -205,6 +224,14 @@ def make_handler(state: FixtureState):
                     self._send(400, {"error": "invalid", "code": "BAD_REQUEST"})
                 else:
                     if parsed.path == "/api/book":
+                        # Naive-only poison: a failed send records the
+                        # key, so a later corrected retry with the same
+                        # key replays this 400 instead of creating.
+                        idem_key = self.headers.get("Idempotency-Key")
+                        if idem_key:
+                            state.failed_keys[idem_key] = (
+                                400, {"error": "invalid",
+                                      "code": "BAD_REQUEST"})
                         self._send(400, {"error": "invalid", "code": "BAD_REQUEST"})
                     else:
                         self._send(422, {"message": "validation failed",

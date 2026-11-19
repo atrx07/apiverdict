@@ -1,4 +1,47 @@
-## 0.4.0 — unreleased (local only, not pushed, not published)
+## 0.4.1 — unreleased (local only, not pushed, not published)
+
+- New live check `idempotency-failed-retry` (28 live checks): a failed
+  send with a key, then a valid retry with the same key, must create
+  exactly 1 resource — a server that records a key as merely "seen"
+  on the failed attempt replays the stored failure and blocks the
+  corrected retry. Invalid input accepted with a 2xx, or a 5xx on
+  the first send, is INCONCLUSIVE, not a verdict on poisoned state.
+  Fixture: naive mode poisons the key on a failed send; fixed mode
+  never records a key on a failed send (stores only on 201).
+- Every failed check now carries a one-line remediation hint in the
+  plain-text summary (`-> ...`); the JSON report schema is unchanged,
+  and inconclusive lines carry no hint (a verification problem is
+  not a behaviour fix). Every registered check has a hint, locked
+  by test — a new check must ship with one.
+- Count reconciliation: the 0.4.0 "27 vs 28" confusion was a
+  miscount — the CLI list's 28th colon-bearing line was the
+  "Static commands" footer, not a check; the registry really held
+  27. A count-lock test now pins registry, pyproject description,
+  README and `apiverdict list` to the same number, and the version
+  assertions derive from `__version__` instead of a hardcoded
+  string, so a bump never needs a test edit.
+- spec-conformance now judges 3.2 QUERY operations when a valid
+  request body can be built from the requestBody schema
+  (example > default > type placeholder); a non-200 for that
+  schema-derived body is unjudged, never a FAIL, and a QUERY
+  operation with no buildable body stays unjudged as before.
+  The GET judging path was factored into a shared helper for
+  this, with no change to GET behaviour (existing spec tests
+  pass; two old tests that asserted "QUERY is always
+  unjudged" were updated to the still-unjudged path).
+- CHANGELOG correction: 0.4.0 was in fact pushed on 2026-11-04
+  (commit 2cfa3c6); its header said "unreleased".
+- Bug fix found in self-review of this release's refactor: the
+  shared judging helper incremented the `skipped` count locally,
+  so `evidence["skipped"]` would always have read 0. The helpers
+  now return the new count, with a regression test pinning it.
+  The full suite had passed with the bug present — no existing
+  test asserted a skipped count.
+- `idempotency-failed-retry` with no valid payload is now
+  INCONCLUSIVE instead of judging a retry that was never valid
+  (its 400 would have misreported as "poisoned").
+
+## 0.4.0 — pushed 2026-11-04 (atrx07/apiverdict, commit 2cfa3c6)
 
 - Link-header parsing now accepts rel="next" in any link-param position
   (RFC 8288 allows params in any order); a server emitting
