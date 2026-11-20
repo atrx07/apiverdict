@@ -114,6 +114,29 @@ class TestSuiteRun(unittest.TestCase):
         self.assertIn("unknown check", out.stderr)
 
 
+
+class TestExampleSuiteFile(unittest.TestCase):
+    def test_shipped_example_suite_passes_on_fixed_fixture(self):
+        # The curated examples/suite.json must itself be valid and
+        # green against a fixed fixture — it is the file a new user
+        # copies first, so a stale entry here is a first-run failure.
+        raw = (ROOT / "examples" / "suite.json").read_text()
+        with FixtureServer("fixed") as base:
+            cfg = raw.replace("http://127.0.0.1:8765", base)
+            tmp = ROOT / "examples" / ".test-suite-tmp.json"
+            try:
+                tmp.write_text(cfg)
+                verdicts = run_suite(tmp)
+            finally:
+                tmp.unlink(missing_ok=True)
+        self.assertEqual([v.check for v in verdicts], [
+            "burst", "pagination", "pagination-consistency",
+            "error-shape", "error-variants", "auth-matrix",
+            "rate-limit", "idempotency", "idempotency-failed-retry",
+            "spec-diff", "filter"])
+        self.assertTrue(all(v.status == "PASS" for v in verdicts), verdicts)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -86,6 +86,17 @@
       "verify_url": "http://127.0.0.1:8765/api/count?slot=suite-idem"
     },
     {
+      "check": "idempotency-failed-retry",
+      "url": "http://127.0.0.1:8765/api/book",
+      "payload": {
+        "slot": "suite-failed-retry"
+      },
+      "invalid_payload": {
+        "__invalid__": true
+      },
+      "verify_url": "http://127.0.0.1:8765/api/count?slot=suite-failed-retry"
+    },
+    {
       "check": "spec-diff",
       "old_spec": "openapi-sample.json",
       "new_spec": "openapi-sample.json"

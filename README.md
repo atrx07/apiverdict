@@ -10,7 +10,7 @@ Python 3.10+ stdlib only, zero dependencies, $0:
 
 ```bash
 pip install .
-apiverdict --version   # apiverdict 0.4.1
+apiverdict --version   # apiverdict 0.4.2
 # or, without installing:
 python -m apiverdict demo
 ```

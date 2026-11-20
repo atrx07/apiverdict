@@ -1,4 +1,15 @@
-## 0.4.1 — unreleased (local only, not pushed, not published)
+## 0.4.2 — 2026-11-20 (local, not yet pushed)
+
+- `examples/suite.json` extended from 10 to 11 checks: it now includes
+  `idempotency-failed-retry` (invalid send with a key, then a valid
+  retry with the same key, must create exactly 1), which the 0.4.1
+  run had deliberately left out. A new test runs the shipped example
+  suite file itself against a fixed fixture and asserts all 11 PASS.
+- Stale headers fixed: the 0.4.1 CHANGELOG and IMPROVE-NOTES headers
+  wrongly said "unreleased / local only, not pushed" after 0.4.1 had
+  in fact been pushed (commit b069527).
+
+## 0.4.1 — 2026-11-19 (pushed to atrx07/apiverdict, commit b069527)
 
 - New live check `idempotency-failed-retry` (28 live checks): a failed
   send with a key, then a valid retry with the same key, must create

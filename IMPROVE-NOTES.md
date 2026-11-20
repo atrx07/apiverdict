@@ -1,4 +1,4 @@
-# Improvement run, 2026-11-19 (~1 hour) — 0.4.1, local only, not pushed
+# Improvement run, 2026-11-19 (~1 hour) — 0.4.1, pushed 2026-11-19 (commit b069527)
 
 Baseline (parent-verified 2026-11-04, commit 2cfa3c6): 0.4.0, 27 live
 checks, 461 tests OK in ~64s.
